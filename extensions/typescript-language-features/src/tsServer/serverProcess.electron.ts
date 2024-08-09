@@ -5,17 +5,18 @@
 
 import * as child_process from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import type { Readable } from 'stream';
 import * as vscode from 'vscode';
 import { TypeScriptServiceConfiguration } from '../configuration/configuration';
 import { Disposable } from '../utils/dispose';
 import { API } from './api';
+import { NodeVersionManager } from './nodeManager';
 import type * as Proto from './protocol/protocol';
 import { TsServerLog, TsServerProcess, TsServerProcessFactory, TsServerProcessKind } from './server';
 import { TypeScriptVersionManager } from './versionManager';
 import { TypeScriptVersion } from './versionProvider';
-import { NodeVersionManager } from './nodeManager';
 
 
 const defaultSize: number = 8192;
@@ -216,6 +217,44 @@ class IpcChildServerProcess extends Disposable implements TsServerProcess {
 	}
 }
 
+class NetChildServerProcess extends Disposable implements TsServerProcess {
+	private readonly _reader: Reader<Proto.Response>;
+
+	constructor(
+		private readonly _sck: net.Socket,
+	) {
+		super();
+		this._reader = this._register(new Reader<Proto.Response>(this._sck));
+	}
+
+	write(serverRequest: Proto.Request): void {
+		this._sck.write(JSON.stringify(serverRequest) + '\r\n', 'utf8');
+	}
+
+	onData(handler: (data: Proto.Response) => void): void {
+		this._reader.onData((data) => {
+			console.log(JSON.stringify(data));
+			handler(data);
+		});
+	}
+
+	onExit(handler: (code: number | null, signal: string | null) => void): void {
+		this._sck.on('close', () => {
+			handler(null, null);
+		});
+	}
+
+	onError(handler: (err: Error) => void): void {
+		this._sck.on('error', handler);
+		this._reader.onError(handler);
+	}
+
+	kill(): void {
+		this._sck.destroy();
+		this._reader.dispose();
+	}
+}
+
 class StdioChildServerProcess extends Disposable implements TsServerProcess {
 	private readonly _reader: Reader<Proto.Response>;
 
@@ -275,6 +314,14 @@ export class ElectronServiceProcessFactory implements TsServerProcessFactory {
 		const useIpc = !execPath && version.apiVersion?.gte(API.v460);
 		if (useIpc) {
 			runtimeArgs.push('--useNodeIpc');
+		}
+
+		if (true) {
+			const client = net.createConnection({ port: 12345 }, () => {
+				console.log('Connected to server!');
+			});
+
+			return new NetChildServerProcess(client);
 		}
 
 		const childProcess = execPath ?
